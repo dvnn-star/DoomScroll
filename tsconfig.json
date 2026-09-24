@@ -12,7 +12,8 @@
     },
     "resolveJsonModule": true,
     "types": [
-      "vite/client"
+      "vite/client",
+      "webextension-polyfill"
     ],
     "strict": true,
     "noUnusedLocals": true,
