@@ -1,10 +1,10 @@
 {
-  "name": "vitesse-webext",
-  "displayName": "Vitesse WebExt",
+  "name": "stopdoomscrolling",
+  "displayName": "StopDoomscrolling",
   "version": "0.0.1",
   "private": true,
   "packageManager": "pnpm@9.7.1",
-  "description": "[description]",
+  "description": "Limits TikTok and Instagram doomscrolling by tracking active time and closing tabs when limits are reached.",
   "scripts": {
     "dev": "npm run clear && cross-env NODE_ENV=development run-p dev:*",
     "dev-firefox": "npm run clear && cross-env NODE_ENV=development EXTENSION=firefox run-p dev:*",
