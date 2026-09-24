@@ -1,19 +1,24 @@
-/* eslint-disable no-console */
 import { onMessage } from 'webext-bridge/content-script'
-import { createApp } from 'vue'
+import { createApp, ref } from 'vue'
 import App from './views/App.vue'
 import { setupApp } from '~/logic/common-setup'
 
-// Firefox `browser.tabs.executeScript()` requires scripts return a primitive value
-(() => {
-  console.info('[vitesse-webext] Hello world from content script')
+type Site = 'tiktok' | 'instagram'
 
-  // communication example: send previous tab title from background page
-  onMessage('tab-prev', ({ data }) => {
-    console.log(`[vitesse-webext] Navigate from page "${data.title}"`)
-  })
+function detectSite(): Site | null {
+  const host = location.hostname
+  if (host.includes('tiktok.com'))
+    return 'tiktok'
+  if (host.includes('instagram.com'))
+    return 'instagram'
+  return null
+}
 
-  // mount component to context window
+;(() => {
+  const site = detectSite()
+  if (!site)
+    return
+
   const container = document.createElement('div')
   container.id = __NAME__
   const root = document.createElement('div')
@@ -24,7 +29,35 @@ import { setupApp } from '~/logic/common-setup'
   shadowDOM.appendChild(styleEl)
   shadowDOM.appendChild(root)
   document.body.appendChild(container)
-  const app = createApp(App)
+
+  const showWarning = ref(false)
+  const warningRemaining = ref(0)
+  const limitReached = ref(false)
+  const currentSite = ref<Site>(site)
+
+  onMessage('warning-show', ({ data }) => {
+    if (data.site !== site)
+      return
+    showWarning.value = true
+    warningRemaining.value = data.remaining
+  })
+
+  onMessage('limit-reached', ({ data }) => {
+    if (data.site !== site)
+      return
+    limitReached.value = true
+    showWarning.value = false
+  })
+
+  const app = createApp(App, {
+    site: currentSite,
+    showWarning,
+    warningRemaining,
+    limitReached,
+    onDismissWarning: () => {
+      showWarning.value = false
+    },
+  })
   setupApp(app)
   app.mount(root)
 })()
