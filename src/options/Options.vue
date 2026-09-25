@@ -1,9 +1,8 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { useSessionStore } from '~/stores/session'
 
 const store = useSessionStore()
-onMounted(() => store.load())
 
 const MAX_LIMIT_MIN = 120
 const MIN_LIMIT_MIN = 1
@@ -11,6 +10,51 @@ const MIN_LIMIT_MIN = 1
 const newDomain = ref('')
 const addError = ref('')
 const savedId = ref('')
+const limitInputs = ref<Record<string, number>>({})
+
+function handleStorageChange(changes: Record<string, any>, areaName: string) {
+  if (areaName === 'local') {
+    if (changes.blockedSites)
+      store.blockedSites = changes.blockedSites.newValue
+    if (changes.strictMode !== undefined)
+      store.strictMode = changes.strictMode.newValue
+    if (changes.lastResetDate !== undefined)
+      store.lastResetDate = changes.lastResetDate.newValue
+  }
+}
+
+let intervalId: ReturnType<typeof setInterval> | null = null
+
+onMounted(async () => {
+  await store.load()
+  for (const s of store.blockedSites)
+    limitInputs.value[s.id] = Math.round(s.limitMs / 60000)
+
+  if (typeof browser !== 'undefined' && browser.storage?.onChanged) {
+    browser.storage.onChanged.addListener(handleStorageChange)
+  }
+
+  intervalId = setInterval(() => {
+    store.load()
+  }, 2000)
+})
+
+onUnmounted(() => {
+  if (intervalId)
+    clearInterval(intervalId)
+  if (typeof browser !== 'undefined' && browser.storage?.onChanged) {
+    browser.storage.onChanged.removeListener(handleStorageChange)
+  }
+})
+
+function formatUsageTime(ms: number): string {
+  const totalSec = Math.floor(ms / 1000)
+  const m = Math.floor(totalSec / 60)
+  const s = totalSec % 60
+  if (m === 0)
+    return `${s}s`
+  return `${m}m ${s}s`
+}
 
 async function addSite() {
   addError.value = ''
@@ -61,14 +105,6 @@ function getLimitMinutes(id: string) {
   const site = store.blockedSites.find(s => s.id === id)
   return site ? Math.round(site.limitMs / 60000) : 30
 }
-
-const limitInputs = ref<Record<string, number>>({})
-
-onMounted(async () => {
-  await store.load()
-  for (const s of store.blockedSites)
-    limitInputs.value[s.id] = Math.round(s.limitMs / 60000)
-})
 </script>
 
 <template>
@@ -157,7 +193,7 @@ onMounted(async () => {
             </button>
           </div>
           <p class="text-xs text-gray-400 mt-1">
-            Warning shown 5 min before limit · {{ Math.round(site.sessionTime / 60000) }} min used today
+            Warning shown 5 min before limit · {{ formatUsageTime(site.sessionTime) }} used today
           </p>
         </div>
 

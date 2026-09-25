@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { sendMessage } from 'webext-bridge/content-script'
 import type { Ref } from 'vue'
 
@@ -11,7 +12,32 @@ const emit = defineEmits<{
   dismiss: []
 }>()
 
-const mins = Math.ceil(props.remaining / 60000)
+const localRemaining = ref(props.remaining)
+
+watch(() => props.remaining, (newVal) => {
+  localRemaining.value = newVal
+})
+
+let timer: ReturnType<typeof setInterval> | null = null
+
+onMounted(() => {
+  timer = setInterval(() => {
+    if (localRemaining.value > 0)
+      localRemaining.value = Math.max(0, localRemaining.value - 1000)
+  }, 1000)
+})
+
+onUnmounted(() => {
+  if (timer)
+    clearInterval(timer)
+})
+
+const formattedTime = computed(() => {
+  const totalSec = Math.max(0, Math.floor(localRemaining.value / 1000))
+  const m = Math.floor(totalSec / 60)
+  const s = totalSec % 60
+  return `${m}:${s.toString().padStart(2, '0')}`
+})
 
 async function useOverride() {
   const result = await sendMessage('override-activate', { siteId: props.siteId.value }, 'background')
@@ -28,7 +54,7 @@ async function useOverride() {
       </div>
       <div class="flex-1">
         <p class="font-semibold text-gray-900 text-sm">
-          {{ siteId.value }}: {{ mins }} minute{{ mins !== 1 ? 's' : '' }} left
+          {{ siteId.value }}: {{ formattedTime }} left
         </p>
         <p class="text-gray-500 text-xs mt-0.5">
           Your session limit is almost up. Time to wrap up?

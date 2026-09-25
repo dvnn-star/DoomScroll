@@ -1,4 +1,4 @@
-import { onMessage } from 'webext-bridge/content-script'
+import { onMessage, sendMessage } from 'webext-bridge/content-script'
 import { createApp, ref } from 'vue'
 import App from './views/App.vue'
 import { setupApp } from '~/logic/common-setup'
@@ -34,6 +34,33 @@ async function getMatchedSiteId(): Promise<string | null> {
   const warningRemaining = ref(0)
   const limitReached = ref(false)
   const currentSiteId = ref(siteId)
+
+  // Real-time active session heartbeat
+  let lastHeartbeat = Date.now()
+  const HEARTBEAT_INTERVAL_MS = 1000
+
+  setInterval(() => {
+    if (document.visibilityState === 'visible') {
+      const now = Date.now()
+      const delta = Math.min(now - lastHeartbeat, 3000)
+      lastHeartbeat = now
+
+      sendMessage('session-update', { siteId, delta }, 'background').catch(() => {})
+
+      if (showWarning.value && warningRemaining.value > 0) {
+        warningRemaining.value = Math.max(0, warningRemaining.value - delta)
+      }
+    }
+    else {
+      lastHeartbeat = Date.now()
+    }
+  }, HEARTBEAT_INTERVAL_MS)
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      lastHeartbeat = Date.now()
+    }
+  })
 
   onMessage('warning-show', ({ data }) => {
     if (data.siteId !== siteId)

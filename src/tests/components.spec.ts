@@ -1,8 +1,10 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { ref } from 'vue'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import Popup from '~/popup/Popup.vue'
 import Options from '~/options/Options.vue'
+import WarningBanner from '~/contentScripts/views/WarningBanner.vue'
 import { useSessionStore } from '~/stores/session'
 
 describe('popup Component', () => {
@@ -109,5 +111,38 @@ describe('options Component', () => {
     await wrapper.vm.$nextTick()
 
     expect(wrapper.text()).toContain('Strict Mode is on')
+  })
+})
+
+describe('warningBanner Component (Real-Time)', () => {
+  it('renders formatted real-time countdown mm:ss', () => {
+    const siteIdRef = ref('tiktok.com')
+    // 4 minutes 30 seconds = 270,000 ms
+    const wrapper = mount(WarningBanner, {
+      props: {
+        siteId: siteIdRef,
+        remaining: 270000,
+      },
+    })
+    expect(wrapper.text()).toContain('tiktok.com: 4:30 left')
+  })
+
+  it('ticks countdown down over time', async () => {
+    vi.useFakeTimers()
+    const siteIdRef = ref('tiktok.com')
+    const wrapper = mount(WarningBanner, {
+      props: {
+        siteId: siteIdRef,
+        remaining: 300000, // 5:00
+      },
+    })
+
+    expect(wrapper.text()).toContain('5:00 left')
+
+    vi.advanceTimersByTime(3000)
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('4:57 left')
+    vi.useRealTimers()
   })
 })

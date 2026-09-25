@@ -12,6 +12,10 @@ const fakePort = {
 
 const fakeBrowser = {
   storage: {
+    onChanged: {
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+    },
     local: {
       get: vi.fn(async (keys?: string | string[] | Record<string, unknown> | null) => {
         if (!keys)

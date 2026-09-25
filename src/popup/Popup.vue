@@ -1,17 +1,50 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, onUnmounted } from 'vue'
 import { sendMessage } from 'webext-bridge/popup'
 import { useSessionStore } from '~/stores/session'
 
 const store = useSessionStore()
-onMounted(() => store.load())
+
+let intervalId: ReturnType<typeof setInterval> | null = null
+
+function handleStorageChange(changes: Record<string, any>, areaName: string) {
+  if (areaName === 'local') {
+    if (changes.blockedSites)
+      store.blockedSites = changes.blockedSites.newValue
+    if (changes.strictMode !== undefined)
+      store.strictMode = changes.strictMode.newValue
+    if (changes.lastResetDate !== undefined)
+      store.lastResetDate = changes.lastResetDate.newValue
+  }
+}
+
+onMounted(() => {
+  store.load()
+
+  if (typeof browser !== 'undefined' && browser.storage?.onChanged) {
+    browser.storage.onChanged.addListener(handleStorageChange)
+  }
+
+  // Live real-time tick to refresh store data every second
+  intervalId = setInterval(() => {
+    store.load()
+  }, 1000)
+})
+
+onUnmounted(() => {
+  if (intervalId)
+    clearInterval(intervalId)
+  if (typeof browser !== 'undefined' && browser.storage?.onChanged) {
+    browser.storage.onChanged.removeListener(handleStorageChange)
+  }
+})
 
 function openOptionsPage() {
   browser.runtime.openOptionsPage()
 }
 
 function formatTime(ms: number): string {
-  const totalSec = Math.floor(ms / 1000)
+  const totalSec = Math.max(0, Math.floor(ms / 1000))
   const m = Math.floor(totalSec / 60)
   const s = totalSec % 60
   return `${m}:${s.toString().padStart(2, '0')}`

@@ -12,6 +12,9 @@ const ALARM_TICK = 'stopdoom-tick'
 const OVERRIDE_DURATION_MS = 15 * 60 * 1000
 const WARNING_BEFORE_MS = 5 * 60 * 1000
 
+// Track last time added per site to avoid double-counting between heartbeat and tick
+const lastTimeAdded: Record<string, number> = {}
+
 function matchesDomain(url: string, domain: string): boolean {
   try {
     const host = new URL(url).hostname.replace(/^www\./, '')
@@ -29,7 +32,7 @@ function getSiteForUrl(url: string, sites: BlockedSite[]): BlockedSite | null {
 
 async function getActiveBlockedTabs(): Promise<{ site: BlockedSite, tabId: number }[]> {
   const state = await getStorage()
-  const tabs = await browser.tabs.query({})
+  const tabs = await browser.tabs.query({ active: true, lastFocusedWindow: true })
   const result: { site: BlockedSite, tabId: number }[] = []
   for (const tab of tabs) {
     if (!tab.url || !tab.id)
@@ -61,39 +64,73 @@ async function notifyWarning(site: BlockedSite, remaining: number): Promise<void
   })
 }
 
-async function tick(): Promise<void> {
+async function applyDelta(siteId: string, delta: number): Promise<void> {
   const state = await resetDailyIfNeeded()
-  const activeTabs = await getActiveBlockedTabs()
+  const siteIndex = state.blockedSites.findIndex(s => s.id === siteId)
+  if (siteIndex === -1)
+    return
 
-  const activeSiteIds = new Set(activeTabs.map(t => t.site.id))
+  const site = state.blockedSites[siteIndex]
+  const newSessionTime = site.sessionTime + delta
   const updatedSites = [...state.blockedSites]
+  updatedSites[siteIndex] = { ...site, sessionTime: newSessionTime }
 
-  for (let i = 0; i < updatedSites.length; i++) {
-    const site = updatedSites[i]
-    if (!activeSiteIds.has(site.id))
-      continue
+  lastTimeAdded[siteId] = Date.now()
 
-    const sessionTime = site.sessionTime + 1000
-    updatedSites[i] = { ...site, sessionTime }
-
-    if (sessionTime >= site.limitMs) {
-      await closeTabsForSite(site.id)
-      for (const { tabId } of activeTabs.filter(t => t.site.id === site.id))
-        sendMessage('limit-reached', { siteId: site.id }, { context: 'content-script', tabId }).catch(() => {})
-      continue
+  if (newSessionTime >= site.limitMs) {
+    await closeTabsForSite(site.id)
+    const activeTabs = await browser.tabs.query({})
+    for (const tab of activeTabs) {
+      if (tab.id && tab.url && matchesDomain(tab.url, site.domain)) {
+        sendMessage('limit-reached', { siteId: site.id }, { context: 'content-script', tabId: tab.id }).catch(() => {})
+      }
+    }
+  }
+  else {
+    const remaining = site.limitMs - newSessionTime
+    const prevRemaining = site.limitMs - site.sessionTime
+    if (remaining <= WARNING_BEFORE_MS && prevRemaining > WARNING_BEFORE_MS) {
+      await notifyWarning(site, remaining)
     }
 
-    const remaining = site.limitMs - sessionTime
-    if (remaining <= WARNING_BEFORE_MS && remaining > WARNING_BEFORE_MS - 1000) {
-      await notifyWarning(site, remaining)
-      for (const { tabId } of activeTabs.filter(t => t.site.id === site.id))
-        sendMessage('warning-show', { siteId: site.id, remaining }, { context: 'content-script', tabId }).catch(() => {})
+    if (remaining <= WARNING_BEFORE_MS) {
+      const activeTabs = await browser.tabs.query({})
+      for (const tab of activeTabs) {
+        if (tab.id && tab.url && matchesDomain(tab.url, site.domain)) {
+          sendMessage('warning-show', { siteId: site.id, remaining }, { context: 'content-script', tabId: tab.id }).catch(() => {})
+        }
+      }
     }
   }
 
   await setStorage({ blockedSites: updatedSites })
 }
 
+async function tick(): Promise<void> {
+  const activeTabs = await getActiveBlockedTabs()
+  if (activeTabs.length === 0)
+    return
+
+  const now = Date.now()
+  for (const { site } of activeTabs) {
+    const last = lastTimeAdded[site.id] || 0
+    if (now - last >= 800) {
+      await applyDelta(site.id, 1000)
+    }
+  }
+}
+
+// Listen for live heartbeats from active content scripts
+onMessage('session-update', async ({ data }) => {
+  const { siteId, delta } = data
+  const clampedDelta = Math.min(Math.max(delta, 0), 5000)
+  await applyDelta(siteId, clampedDelta)
+})
+
+// Fallback interval when service worker is awake
+setInterval(tick, 1000)
+
+// Periodic alarm as fallback to wake service worker and reset daily
 browser.alarms.create(ALARM_TICK, { periodInMinutes: 1 / 60 })
 
 browser.alarms.onAlarm.addListener(async (alarm) => {
