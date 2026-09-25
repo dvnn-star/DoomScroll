@@ -24,7 +24,7 @@ export default defineConfig({
     lib: {
       entry: r('src/background/main.ts'),
       name: packageJson.name,
-      formats: ['iife'],
+      formats: ['es'],
     },
     rollupOptions: {
       output: {
