@@ -39,6 +39,7 @@
     "@ffflorian/jszip-cli": "^3.8.5",
     "@iconify/json": "^2.2.239",
     "@playwright/test": "^1.46.1",
+    "@tailwindcss/postcss": "^4.3.3",
     "@types/fs-extra": "^11.0.4",
     "@types/node": "^22.5.0",
     "@types/webextension-polyfill": "^0.12.0",
