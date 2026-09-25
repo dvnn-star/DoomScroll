@@ -195,4 +195,16 @@ describe('session Store', () => {
     expect(store.canOverride('tiktok.com')).toBe(false)
     expect(store.canOverride('instagram.com')).toBe(true)
   })
+
+  it('increments session time and reflects in remaining time in real time', async () => {
+    const store = useSessionStore()
+    await store.load()
+    const initialRemaining = store.remaining('tiktok.com')
+
+    // Simulate 5 seconds elapsed
+    const site = store.getSite('tiktok.com')!
+    await store.updateSite('tiktok.com', { sessionTime: site.sessionTime + 5000 })
+
+    expect(store.remaining('tiktok.com')).toBe(initialRemaining - 5000)
+  })
 })

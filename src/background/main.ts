@@ -1,6 +1,6 @@
 import { onMessage, sendMessage } from 'webext-bridge/background'
 import type { BlockedSite } from '../../shim'
-import { getStorage, makeSite, resetDailyIfNeeded, setStorage } from '~/logic/storage'
+import { getStorage, resetDailyIfNeeded, setStorage } from '~/logic/storage'
 
 if (import.meta.hot) {
   // @ts-expect-error for background HMR
@@ -17,8 +17,8 @@ const lastTimeAdded: Record<string, number> = {}
 
 function matchesDomain(url: string, domain: string): boolean {
   try {
-    const host = new URL(url).hostname.replace(/^www\./, '')
-    const d = domain.replace(/^www\./, '')
+    const host = new URL(url).hostname.replace(/^www\./, '').toLowerCase()
+    const d = domain.replace(/^www\./, '').toLowerCase()
     return host === d || host.endsWith(`.${d}`)
   }
   catch {
@@ -32,12 +32,13 @@ function getSiteForUrl(url: string, sites: BlockedSite[]): BlockedSite | null {
 
 async function getActiveBlockedTabs(): Promise<{ site: BlockedSite, tabId: number }[]> {
   const state = await getStorage()
-  const tabs = await browser.tabs.query({ active: true, lastFocusedWindow: true })
+  const tabs = await browser.tabs.query({ active: true })
   const result: { site: BlockedSite, tabId: number }[] = []
   for (const tab of tabs) {
-    if (!tab.url || !tab.id)
+    const url = tab.url || tab.pendingUrl
+    if (!url || !tab.id)
       continue
-    const site = getSiteForUrl(tab.url, state.blockedSites)
+    const site = getSiteForUrl(url, state.blockedSites)
     if (site)
       result.push({ site, tabId: tab.id })
   }
@@ -48,7 +49,7 @@ async function closeTabsForSite(siteId: string): Promise<void> {
   const state = await getStorage()
   const tabs = await browser.tabs.query({})
   const toClose = tabs
-    .filter(t => t.id && t.url && getSiteForUrl(t.url, state.blockedSites)?.id === siteId)
+    .filter(t => t.id && (t.url || t.pendingUrl) && getSiteForUrl(t.url || t.pendingUrl!, state.blockedSites)?.id === siteId)
     .map(t => t.id!)
   if (toClose.length > 0)
     await browser.tabs.remove(toClose)
@@ -81,7 +82,8 @@ async function applyDelta(siteId: string, delta: number): Promise<void> {
     await closeTabsForSite(site.id)
     const activeTabs = await browser.tabs.query({})
     for (const tab of activeTabs) {
-      if (tab.id && tab.url && matchesDomain(tab.url, site.domain)) {
+      const url = tab.url || tab.pendingUrl
+      if (tab.id && url && matchesDomain(url, site.domain)) {
         sendMessage('limit-reached', { siteId: site.id }, { context: 'content-script', tabId: tab.id }).catch(() => {})
       }
     }
@@ -96,7 +98,8 @@ async function applyDelta(siteId: string, delta: number): Promise<void> {
     if (remaining <= WARNING_BEFORE_MS) {
       const activeTabs = await browser.tabs.query({})
       for (const tab of activeTabs) {
-        if (tab.id && tab.url && matchesDomain(tab.url, site.domain)) {
+        const url = tab.url || tab.pendingUrl
+        if (tab.id && url && matchesDomain(url, site.domain)) {
           sendMessage('warning-show', { siteId: site.id, remaining }, { context: 'content-script', tabId: tab.id }).catch(() => {})
         }
       }
@@ -120,17 +123,40 @@ async function tick(): Promise<void> {
   }
 }
 
-// Listen for live heartbeats from active content scripts
+// 1. Native runtime messaging (guaranteed to wake service worker)
+browser.runtime.onMessage.addListener((message: any, _sender: any, sendResponse: any) => {
+  if (message?.type === 'session-update') {
+    const { siteId, delta } = message
+    const clampedDelta = Math.min(Math.max(delta || 1000, 0), 5000)
+    applyDelta(siteId, clampedDelta).then(() => {
+      sendResponse({ success: true })
+    })
+    return true
+  }
+})
+
+// 2. webext-bridge message listener
 onMessage('session-update', async ({ data }) => {
   const { siteId, delta } = data
   const clampedDelta = Math.min(Math.max(delta, 0), 5000)
   await applyDelta(siteId, clampedDelta)
 })
 
-// Fallback interval when service worker is awake
+// 3. Tab event listeners to wake and track immediately
+browser.tabs.onActivated.addListener(() => {
+  tick().catch(() => {})
+})
+
+browser.tabs.onUpdated.addListener((_tabId, changeInfo) => {
+  if (changeInfo.url || changeInfo.status === 'complete') {
+    tick().catch(() => {})
+  }
+})
+
+// 4. Fallback interval while service worker is awake
 setInterval(tick, 1000)
 
-// Periodic alarm as fallback to wake service worker and reset daily
+// 5. Periodic alarm as fallback to wake service worker and reset daily
 browser.alarms.create(ALARM_TICK, { periodInMinutes: 1 / 60 })
 
 browser.alarms.onAlarm.addListener(async (alarm) => {
@@ -139,14 +165,7 @@ browser.alarms.onAlarm.addListener(async (alarm) => {
 })
 
 browser.runtime.onInstalled.addListener(async () => {
-  const state = await getStorage()
-  if (!state.lastResetDate) {
-    await setStorage({
-      blockedSites: [makeSite('tiktok.com'), makeSite('instagram.com')],
-      strictMode: false,
-      lastResetDate: new Date().toLocaleDateString(),
-    })
-  }
+  await getStorage()
 })
 
 onMessage('override-activate', async ({ data }) => {
