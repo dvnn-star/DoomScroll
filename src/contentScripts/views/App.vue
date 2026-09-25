@@ -3,7 +3,7 @@ import type { Ref } from 'vue'
 import WarningBanner from './WarningBanner.vue'
 
 defineProps<{
-  site: Ref<'tiktok' | 'instagram'>
+  siteId: Ref<string>
   showWarning: Ref<boolean>
   warningRemaining: Ref<number>
   limitReached: Ref<boolean>
@@ -18,7 +18,7 @@ const emit = defineEmits<{
   <div>
     <WarningBanner
       v-if="showWarning.value"
-      :site="site"
+      :site-id="siteId"
       :remaining="warningRemaining.value"
       @dismiss="emit('dismiss-warning')"
     />

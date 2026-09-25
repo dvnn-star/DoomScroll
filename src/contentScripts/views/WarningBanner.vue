@@ -3,7 +3,7 @@ import { sendMessage } from 'webext-bridge/content-script'
 import type { Ref } from 'vue'
 
 const props = defineProps<{
-  site: Ref<'tiktok' | 'instagram'>
+  siteId: Ref<string>
   remaining: number
 }>()
 
@@ -11,11 +11,10 @@ const emit = defineEmits<{
   dismiss: []
 }>()
 
-const siteLabel = props.site.value === 'tiktok' ? 'TikTok' : 'Instagram'
 const mins = Math.ceil(props.remaining / 60000)
 
 async function useOverride() {
-  const result = await sendMessage('override-activate', { site: props.site.value }, 'background')
+  const result = await sendMessage('override-activate', { siteId: props.siteId.value }, 'background')
   if (result?.success)
     emit('dismiss')
 }
@@ -29,7 +28,7 @@ async function useOverride() {
       </div>
       <div class="flex-1">
         <p class="font-semibold text-gray-900 text-sm">
-          {{ siteLabel }}: {{ mins }} minute{{ mins !== 1 ? 's' : '' }} left
+          {{ siteId.value }}: {{ mins }} minute{{ mins !== 1 ? 's' : '' }} left
         </p>
         <p class="text-gray-500 text-xs mt-0.5">
           Your session limit is almost up. Time to wrap up?

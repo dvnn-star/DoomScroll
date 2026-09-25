@@ -1,23 +1,25 @@
 import type { ProtocolWithReturn } from 'webext-bridge'
 
+export interface BlockedSite {
+  id: string
+  domain: string // e.g., "tiktok.com"
+  sessionTime: number
+  overrideUsed: boolean
+  limitMs: number
+}
+
 export interface StorageSchema {
-  tiktokSessionTime: number
-  instagramSessionTime: number
-  tiktokOverrideUsed: boolean
-  instagramOverrideUsed: boolean
-  tiktokLimit: number
-  instagramLimit: number
+  blockedSites: BlockedSite[]
   strictMode: boolean
   lastResetDate: string
-  enabledSites: ('tiktok' | 'instagram')[]
 }
 
 declare module 'webext-bridge' {
   export interface ProtocolMap {
-    'session-update': { site: 'tiktok' | 'instagram', delta: number }
-    'warning-show': { site: 'tiktok' | 'instagram', remaining: number }
-    'limit-reached': { site: 'tiktok' | 'instagram' }
-    'override-activate': ProtocolWithReturn<{ site: 'tiktok' | 'instagram' }, { success: boolean }>
+    'session-update': { siteId: string, delta: number }
+    'warning-show': { siteId: string, remaining: number }
+    'limit-reached': { siteId: string }
+    'override-activate': ProtocolWithReturn<{ siteId: string }, { success: boolean }>
     'state-sync': StorageSchema
   }
 }

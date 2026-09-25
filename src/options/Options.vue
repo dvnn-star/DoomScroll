@@ -8,69 +8,67 @@ onMounted(() => store.load())
 const MAX_LIMIT_MIN = 120
 const MIN_LIMIT_MIN = 1
 
-type Site = 'tiktok' | 'instagram'
+const newDomain = ref('')
+const addError = ref('')
+const savedId = ref('')
 
-const sites: { key: Site, label: string }[] = [
-  { key: 'tiktok', label: 'TikTok' },
-  { key: 'instagram', label: 'Instagram' },
-]
-
-function getLimitMinutes(site: Site): number {
-  const ms = site === 'tiktok' ? store.tiktokLimit : store.instagramLimit
-  return Math.round(ms / 60000)
+async function addSite() {
+  addError.value = ''
+  const val = newDomain.value.trim()
+  if (!val) {
+    addError.value = 'Please enter a domain.'
+    return
+  }
+  const clean = val.toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0]
+  if (!clean.includes('.')) {
+    addError.value = 'Enter a valid domain (e.g. youtube.com)'
+    return
+  }
+  if (store.blockedSites.find(s => s.id === clean)) {
+    addError.value = `${clean} is already in the list.`
+    return
+  }
+  await store.addSite(clean)
+  newDomain.value = ''
 }
 
-const limitInputs = ref<Record<Site, number>>({
-  tiktok: Math.round((store.tiktokLimit || 30 * 60 * 1000) / 60000),
-  instagram: Math.round((store.instagramLimit || 30 * 60 * 1000) / 60000),
-})
+async function removeSite(id: string) {
+  await store.removeSite(id)
+}
 
-onMounted(() => {
-  limitInputs.value.tiktok = getLimitMinutes('tiktok')
-  limitInputs.value.instagram = getLimitMinutes('instagram')
-})
-
-async function saveLimit(site: Site) {
-  let val = limitInputs.value[site]
-  val = Math.max(MIN_LIMIT_MIN, Math.min(MAX_LIMIT_MIN, val))
-  limitInputs.value[site] = val
-  await store.setLimit(site, val * 60 * 1000)
+async function saveLimit(id: string, minutes: number) {
+  const clamped = Math.max(MIN_LIMIT_MIN, Math.min(MAX_LIMIT_MIN, minutes))
+  await store.setLimit(id, clamped * 60 * 1000)
+  savedId.value = id
+  setTimeout(() => {
+    savedId.value = ''
+  }, 1500)
 }
 
 async function toggleStrictMode() {
   await store.save({ strictMode: !store.strictMode })
 }
 
-async function toggleSite(site: Site) {
-  const current = [...store.enabledSites]
-  const idx = current.indexOf(site)
-  if (idx >= 0)
-    current.splice(idx, 1)
-  else
-    current.push(site)
-  await store.save({ enabledSites: current })
-}
-
 async function resetData() {
+  const updated = store.blockedSites.map(s => ({ ...s, sessionTime: 0, overrideUsed: false }))
   await store.save({
-    tiktokSessionTime: 0,
-    instagramSessionTime: 0,
-    tiktokOverrideUsed: false,
-    instagramOverrideUsed: false,
+    blockedSites: updated,
     lastResetDate: new Date().toLocaleDateString(),
   })
 }
 
-const isSiteEnabled = (site: Site) => store.enabledSites.includes(site)
-
-const saved = ref(false)
-async function save(site: Site) {
-  await saveLimit(site)
-  saved.value = true
-  setTimeout(() => {
-    saved.value = false
-  }, 1500)
+function getLimitMinutes(id: string) {
+  const site = store.blockedSites.find(s => s.id === id)
+  return site ? Math.round(site.limitMs / 60000) : 30
 }
+
+const limitInputs = ref<Record<string, number>>({})
+
+onMounted(async () => {
+  await store.load()
+  for (const s of store.blockedSites)
+    limitInputs.value[s.id] = Math.round(s.limitMs / 60000)
+})
 </script>
 
 <template>
@@ -89,49 +87,78 @@ async function save(site: Site) {
       </div>
 
       <div class="space-y-4">
-        <div v-for="s in sites" :key="s.key" class="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
-          <div class="flex items-center justify-between mb-4">
-            <h2 class="font-semibold text-gray-900">
-              {{ s.label }}
-            </h2>
-            <label class="relative inline-flex items-center cursor-pointer">
-              <input
-                type="checkbox"
-                class="sr-only peer"
-                :checked="isSiteEnabled(s.key)"
-                @change="toggleSite(s.key)"
-              >
-              <div class="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-teal-600" />
-            </label>
+        <div class="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
+          <h2 class="font-semibold text-gray-900 mb-1">
+            Add Website
+          </h2>
+          <p class="text-xs text-gray-400 mb-3">
+            Enter any domain to limit (e.g. youtube.com, twitter.com)
+          </p>
+          <div class="flex gap-2">
+            <input
+              v-model="newDomain"
+              type="text"
+              placeholder="youtube.com"
+              class="flex-1 px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
+              @keydown.enter="addSite"
+            >
+            <button
+              class="px-4 py-2 text-sm bg-teal-600 hover:bg-teal-700 text-white rounded-lg cursor-pointer border-0 font-medium transition-colors"
+              @click="addSite"
+            >
+              Add
+            </button>
+          </div>
+          <p v-if="addError" class="text-xs text-red-500 mt-2">
+            {{ addError }}
+          </p>
+        </div>
+
+        <div v-if="store.blockedSites.length === 0" class="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 text-center text-gray-400 text-sm">
+          No sites added yet. Add a domain above to start limiting.
+        </div>
+
+        <div
+          v-for="site in store.blockedSites"
+          :key="site.id"
+          class="bg-white rounded-2xl p-5 shadow-sm border border-gray-100"
+        >
+          <div class="flex items-center justify-between mb-3">
+            <div class="flex items-center gap-2">
+              <span class="text-sm font-medium text-gray-800">{{ site.domain }}</span>
+              <span
+                v-if="site.overrideUsed"
+                class="text-xs px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded-full"
+              >override used</span>
+            </div>
+            <button
+              class="text-xs text-red-400 hover:text-red-600 cursor-pointer bg-transparent border-0 font-medium"
+              @click="removeSite(site.id)"
+            >
+              Remove
+            </button>
           </div>
 
-          <div class="space-y-3">
-            <div>
-              <label class="block text-xs font-medium text-gray-500 mb-1">
-                Daily limit (minutes)
-              </label>
-              <div class="flex items-center gap-2">
-                <input
-                  v-model.number="limitInputs[s.key]"
-                  type="number"
-                  :min="MIN_LIMIT_MIN"
-                  :max="MAX_LIMIT_MIN"
-                  class="w-24 px-3 py-1.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
-                  @blur="saveLimit(s.key)"
-                >
-                <span class="text-xs text-gray-400">max {{ MAX_LIMIT_MIN }} min</span>
-                <button
-                  class="ml-auto text-xs px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-lg cursor-pointer border-0 font-medium transition-colors"
-                  @click="save(s.key)"
-                >
-                  {{ saved ? 'Saved ✓' : 'Save' }}
-                </button>
-              </div>
-              <p class="text-xs text-gray-400 mt-1">
-                Warning shown 5 minutes before limit
-              </p>
-            </div>
+          <div class="flex items-center gap-2">
+            <label class="text-xs text-gray-500 shrink-0">Limit (min):</label>
+            <input
+              v-model.number="limitInputs[site.id]"
+              type="number"
+              :min="MIN_LIMIT_MIN"
+              :max="MAX_LIMIT_MIN"
+              class="w-20 px-2 py-1 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
+            >
+            <span class="text-xs text-gray-400">max {{ MAX_LIMIT_MIN }}</span>
+            <button
+              class="ml-auto text-xs px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-lg cursor-pointer border-0 font-medium transition-colors"
+              @click="saveLimit(site.id, limitInputs[site.id] ?? getLimitMinutes(site.id))"
+            >
+              {{ savedId === site.id ? 'Saved ✓' : 'Save' }}
+            </button>
           </div>
+          <p class="text-xs text-gray-400 mt-1">
+            Warning shown 5 min before limit · {{ Math.round(site.sessionTime / 60000) }} min used today
+          </p>
         </div>
 
         <div class="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
@@ -141,7 +168,7 @@ async function save(site: Site) {
                 Strict Mode
               </h2>
               <p class="text-xs text-gray-400 mt-0.5">
-                Disables the 15-minute override. Limit is final.
+                Disables the 15-minute override for all sites.
               </p>
             </div>
             <label class="relative inline-flex items-center cursor-pointer">
@@ -155,16 +182,16 @@ async function save(site: Site) {
             </label>
           </div>
           <div v-if="store.strictMode" class="mt-3 text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">
-            Strict Mode is on. Override is disabled for all sites.
+            Strict Mode is on. Override is disabled.
           </div>
         </div>
 
         <div class="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
-          <h2 class="font-semibold text-gray-900 mb-2">
+          <h2 class="font-semibold text-gray-900 mb-1">
             Reset Today's Data
           </h2>
           <p class="text-xs text-gray-400 mb-3">
-            Clears session time and override state. Does not change your limits.
+            Clears session time and override state for all sites.
           </p>
           <button
             class="text-xs px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg cursor-pointer border-0 font-medium transition-colors"

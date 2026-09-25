@@ -1,6 +1,6 @@
 import { onMessage, sendMessage } from 'webext-bridge/background'
-import type { StorageSchema } from '../../shim'
-import { getStorage, resetDailyIfNeeded, setStorage } from '~/logic/storage'
+import type { BlockedSite } from '../../shim'
+import { getStorage, makeSite, resetDailyIfNeeded, setStorage } from '~/logic/storage'
 
 if (import.meta.hot) {
   // @ts-expect-error for background HMR
@@ -12,104 +12,86 @@ const ALARM_TICK = 'stopdoom-tick'
 const OVERRIDE_DURATION_MS = 15 * 60 * 1000
 const WARNING_BEFORE_MS = 5 * 60 * 1000
 
-type Site = 'tiktok' | 'instagram'
-
-function getSite(url: string): Site | null {
-  if (url.includes('tiktok.com'))
-    return 'tiktok'
-  if (url.includes('instagram.com'))
-    return 'instagram'
-  return null
+function matchesDomain(url: string, domain: string): boolean {
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, '')
+    const d = domain.replace(/^www\./, '')
+    return host === d || host.endsWith(`.${d}`)
+  }
+  catch {
+    return false
+  }
 }
 
-function sessionKey(site: Site): keyof StorageSchema {
-  return site === 'tiktok' ? 'tiktokSessionTime' : 'instagramSessionTime'
+function getSiteForUrl(url: string, sites: BlockedSite[]): BlockedSite | null {
+  return sites.find(s => matchesDomain(url, s.domain)) ?? null
 }
 
-function limitKey(site: Site): keyof StorageSchema {
-  return site === 'tiktok' ? 'tiktokLimit' : 'instagramLimit'
-}
-
-function overrideKey(site: Site): keyof StorageSchema {
-  return site === 'tiktok' ? 'tiktokOverrideUsed' : 'instagramOverrideUsed'
-}
-
-async function getActiveSiteTabs(): Promise<{ site: Site, tabId: number }[]> {
-  const tabs = await browser.tabs.query({ active: true })
-  const result: { site: Site, tabId: number }[] = []
+async function getActiveBlockedTabs(): Promise<{ site: BlockedSite, tabId: number }[]> {
+  const state = await getStorage()
+  const tabs = await browser.tabs.query({})
+  const result: { site: BlockedSite, tabId: number }[] = []
   for (const tab of tabs) {
     if (!tab.url || !tab.id)
       continue
-    const site = getSite(tab.url)
+    const site = getSiteForUrl(tab.url, state.blockedSites)
     if (site)
       result.push({ site, tabId: tab.id })
   }
-  return tabs
-    .filter(t => t.url && t.id && getSite(t.url))
-    .map(t => ({ site: getSite(t.url!)!, tabId: t.id! }))
+  return result
 }
 
-async function closeAllSiteTabs(site: Site): Promise<void> {
+async function closeTabsForSite(siteId: string): Promise<void> {
+  const state = await getStorage()
   const tabs = await browser.tabs.query({})
   const toClose = tabs
-    .filter(t => t.id && t.url && getSite(t.url) === site)
+    .filter(t => t.id && t.url && getSiteForUrl(t.url, state.blockedSites)?.id === siteId)
     .map(t => t.id!)
   if (toClose.length > 0)
     await browser.tabs.remove(toClose)
 }
 
-async function notifyWarning(site: Site, remaining: number): Promise<void> {
-  const siteLabel = site === 'tiktok' ? 'TikTok' : 'Instagram'
+async function notifyWarning(site: BlockedSite, remaining: number): Promise<void> {
   const mins = Math.ceil(remaining / 60000)
-  browser.notifications.create(`warn-${site}`, {
+  browser.notifications.create(`warn-${site.id}`, {
     type: 'basic',
     iconUrl: 'assets/icon-512.png',
     title: 'StopDoomscrolling',
-    message: `${siteLabel}: ${mins} minute${mins !== 1 ? 's' : ''} remaining before your session ends.`,
+    message: `${site.domain}: ${mins} minute${mins !== 1 ? 's' : ''} remaining.`,
   })
 }
 
 async function tick(): Promise<void> {
   const state = await resetDailyIfNeeded()
-  const activeTabs = await getActiveSiteTabs()
+  const activeTabs = await getActiveBlockedTabs()
 
-  const sitesActive = new Set(activeTabs.map(t => t.site))
+  const activeSiteIds = new Set(activeTabs.map(t => t.site.id))
+  const updatedSites = [...state.blockedSites]
 
-  for (const site of ['tiktok', 'instagram'] as Site[]) {
-    if (!state.enabledSites.includes(site))
+  for (let i = 0; i < updatedSites.length; i++) {
+    const site = updatedSites[i]
+    if (!activeSiteIds.has(site.id))
       continue
-    if (!sitesActive.has(site))
-      continue
 
-    const sessionTime = (state[sessionKey(site)] as number) + 1000
-    const limit = state[limitKey(site)] as number
-    const overrideUsed = state[overrideKey(site)] as boolean
+    const sessionTime = site.sessionTime + 1000
+    updatedSites[i] = { ...site, sessionTime }
 
-    const update: Partial<StorageSchema> = { [sessionKey(site)]: sessionTime }
-    await setStorage(update)
-
-    if (sessionTime >= limit) {
-      await closeAllSiteTabs(site)
-      for (const { tabId } of activeTabs.filter(t => t.site === site)) {
-        sendMessage('limit-reached', { site }, { context: 'content-script', tabId }).catch(() => {})
-      }
+    if (sessionTime >= site.limitMs) {
+      await closeTabsForSite(site.id)
+      for (const { tabId } of activeTabs.filter(t => t.site.id === site.id))
+        sendMessage('limit-reached', { siteId: site.id }, { context: 'content-script', tabId }).catch(() => {})
       continue
     }
 
-    const remaining = limit - sessionTime
+    const remaining = site.limitMs - sessionTime
     if (remaining <= WARNING_BEFORE_MS && remaining > WARNING_BEFORE_MS - 1000) {
       await notifyWarning(site, remaining)
-      for (const { tabId } of activeTabs.filter(t => t.site === site)) {
-        sendMessage('warning-show', { site, remaining }, { context: 'content-script', tabId }).catch(() => {})
-      }
-    }
-
-    if (!overrideUsed) {
-      for (const { tabId } of activeTabs.filter(t => t.site === site)) {
-        sendMessage('state-sync', state, { context: 'content-script', tabId }).catch(() => {})
-      }
+      for (const { tabId } of activeTabs.filter(t => t.site.id === site.id))
+        sendMessage('warning-show', { siteId: site.id, remaining }, { context: 'content-script', tabId }).catch(() => {})
     }
   }
+
+  await setStorage({ blockedSites: updatedSites })
 }
 
 browser.alarms.create(ALARM_TICK, { periodInMinutes: 1 / 60 })
@@ -123,35 +105,29 @@ browser.runtime.onInstalled.addListener(async () => {
   const state = await getStorage()
   if (!state.lastResetDate) {
     await setStorage({
-      tiktokSessionTime: 0,
-      instagramSessionTime: 0,
-      tiktokOverrideUsed: false,
-      instagramOverrideUsed: false,
-      tiktokLimit: 30 * 60 * 1000,
-      instagramLimit: 30 * 60 * 1000,
+      blockedSites: [makeSite('tiktok.com'), makeSite('instagram.com')],
       strictMode: false,
       lastResetDate: new Date().toLocaleDateString(),
-      enabledSites: ['tiktok', 'instagram'],
     })
   }
 })
 
 onMessage('override-activate', async ({ data }) => {
-  const { site } = data
+  const { siteId } = data
   const state = await getStorage()
 
   if (state.strictMode)
     return { success: false }
 
-  const used = state[overrideKey(site)] as boolean
-  if (used)
+  const site = state.blockedSites.find(s => s.id === siteId)
+  if (!site || site.overrideUsed)
     return { success: false }
 
-  const sessionTime = (state[sessionKey(site)] as number) - OVERRIDE_DURATION_MS
-  await setStorage({
-    [overrideKey(site)]: true,
-    [sessionKey(site)]: Math.max(0, sessionTime),
-  })
-
+  const updated = state.blockedSites.map(s =>
+    s.id === siteId
+      ? { ...s, overrideUsed: true, sessionTime: Math.max(0, s.sessionTime - OVERRIDE_DURATION_MS) }
+      : s,
+  )
+  await setStorage({ blockedSites: updated })
   return { success: true }
 })

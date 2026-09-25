@@ -39,24 +39,17 @@ export async function getManifest() {
       'alarms',
       'notifications',
     ],
+    host_permissions: ['*://*/*'],
     content_scripts: [
       {
-        matches: [
-          '*://*.tiktok.com/*',
-          '*://*.instagram.com/*',
-        ],
-        js: [
-          'dist/contentScripts/index.global.js',
-        ],
+        matches: ['*://*/*'],
+        js: ['dist/contentScripts/index.global.js'],
       },
     ],
     web_accessible_resources: [
       {
         resources: ['dist/contentScripts/style.css'],
-        matches: [
-          '*://*.tiktok.com/*',
-          '*://*.instagram.com/*',
-        ],
+        matches: ['*://*/*'],
       },
     ],
     content_security_policy: {

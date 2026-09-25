@@ -3,20 +3,20 @@ import { createApp, ref } from 'vue'
 import App from './views/App.vue'
 import { setupApp } from '~/logic/common-setup'
 
-type Site = 'tiktok' | 'instagram'
-
-function detectSite(): Site | null {
-  const host = location.hostname
-  if (host.includes('tiktok.com'))
-    return 'tiktok'
-  if (host.includes('instagram.com'))
-    return 'instagram'
-  return null
+async function getMatchedSiteId(): Promise<string | null> {
+  const state = await browser.storage.local.get('blockedSites') as { blockedSites?: { id: string, domain: string }[] }
+  const sites = state.blockedSites ?? []
+  const host = location.hostname.replace(/^www\./, '')
+  const match = sites.find((s) => {
+    const d = s.domain.replace(/^www\./, '')
+    return host === d || host.endsWith(`.${d}`)
+  })
+  return match?.id ?? null
 }
 
-;(() => {
-  const site = detectSite()
-  if (!site)
+;(async () => {
+  const siteId = await getMatchedSiteId()
+  if (!siteId)
     return
 
   const container = document.createElement('div')
@@ -33,24 +33,24 @@ function detectSite(): Site | null {
   const showWarning = ref(false)
   const warningRemaining = ref(0)
   const limitReached = ref(false)
-  const currentSite = ref<Site>(site)
+  const currentSiteId = ref(siteId)
 
   onMessage('warning-show', ({ data }) => {
-    if (data.site !== site)
+    if (data.siteId !== siteId)
       return
     showWarning.value = true
     warningRemaining.value = data.remaining
   })
 
   onMessage('limit-reached', ({ data }) => {
-    if (data.site !== site)
+    if (data.siteId !== siteId)
       return
     limitReached.value = true
     showWarning.value = false
   })
 
   const app = createApp(App, {
-    site: currentSite,
+    siteId: currentSiteId,
     showWarning,
     warningRemaining,
     limitReached,

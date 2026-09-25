@@ -1,18 +1,25 @@
-import type { StorageSchema } from '../../shim'
+import type { BlockedSite, StorageSchema } from '../../shim'
 
 const DEFAULT_LIMIT_MS = 30 * 60 * 1000
 const today = () => new Date().toLocaleDateString()
 
+export function makeSite(domain: string): BlockedSite {
+  return {
+    id: domain,
+    domain,
+    sessionTime: 0,
+    overrideUsed: false,
+    limitMs: DEFAULT_LIMIT_MS,
+  }
+}
+
 const DEFAULTS: StorageSchema = {
-  tiktokSessionTime: 0,
-  instagramSessionTime: 0,
-  tiktokOverrideUsed: false,
-  instagramOverrideUsed: false,
-  tiktokLimit: DEFAULT_LIMIT_MS,
-  instagramLimit: DEFAULT_LIMIT_MS,
+  blockedSites: [
+    makeSite('tiktok.com'),
+    makeSite('instagram.com'),
+  ],
   strictMode: false,
   lastResetDate: today(),
-  enabledSites: ['tiktok', 'instagram'],
 }
 
 export async function getStorage(): Promise<StorageSchema> {
@@ -28,10 +35,11 @@ export async function resetDailyIfNeeded(): Promise<StorageSchema> {
   const state = await getStorage()
   if (state.lastResetDate !== today()) {
     const reset: Partial<StorageSchema> = {
-      tiktokOverrideUsed: false,
-      instagramOverrideUsed: false,
-      tiktokSessionTime: 0,
-      instagramSessionTime: 0,
+      blockedSites: state.blockedSites.map(s => ({
+        ...s,
+        sessionTime: 0,
+        overrideUsed: false,
+      })),
       lastResetDate: today(),
     }
     await setStorage(reset)
