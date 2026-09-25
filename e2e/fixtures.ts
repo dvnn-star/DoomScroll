@@ -12,7 +12,8 @@ export const test = base.extend<{
   context: BrowserContext
   extensionId: string
 }>({
-  context: async ({ _headless: _ }, use) => {
+  context: async ({ headless }, use) => {
+    void headless
     const context = await chromium.launchPersistentContext('', {
       headless: false,
       executablePath: '/usr/bin/google-chrome',
