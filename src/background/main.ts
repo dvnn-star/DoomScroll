@@ -11,9 +11,10 @@ if (import.meta.hot) {
 const ALARM_TICK = 'stopdoom-tick'
 const OVERRIDE_DURATION_MS = 15 * 60 * 1000
 const WARNING_BEFORE_MS = 5 * 60 * 1000
+const TICK_INTERVAL_MS = 1000
 
-// Track last time added per site to avoid double-counting between heartbeat and tick
-const lastTimeAdded: Record<string, number> = {}
+// Track last tick time to ensure accurate 1-second intervals
+let lastTickTime = 0
 
 function matchesDomain(url: string, domain: string): boolean {
   try {
@@ -65,7 +66,7 @@ async function notifyWarning(site: BlockedSite, remaining: number): Promise<void
   })
 }
 
-async function applyDelta(siteId: string, delta: number): Promise<void> {
+async function applyTimeUpdate(siteId: string, delta: number): Promise<void> {
   const state = await resetDailyIfNeeded()
   const siteIndex = state.blockedSites.findIndex(s => s.id === siteId)
   if (siteIndex === -1)
@@ -75,8 +76,6 @@ async function applyDelta(siteId: string, delta: number): Promise<void> {
   const newSessionTime = site.sessionTime + delta
   const updatedSites = [...state.blockedSites]
   updatedSites[siteIndex] = { ...site, sessionTime: newSessionTime }
-
-  lastTimeAdded[siteId] = Date.now()
 
   if (newSessionTime >= site.limitMs) {
     await closeTabsForSite(site.id)
@@ -110,39 +109,31 @@ async function applyDelta(siteId: string, delta: number): Promise<void> {
 }
 
 async function tick(): Promise<void> {
+  const now = Date.now()
+
+  // Ensure we only tick once per second
+  if (now - lastTickTime < TICK_INTERVAL_MS)
+    return
+  lastTickTime = now
+
   const activeTabs = await getActiveBlockedTabs()
   if (activeTabs.length === 0)
     return
 
-  const now = Date.now()
   for (const { site } of activeTabs) {
-    const last = lastTimeAdded[site.id] || 0
-    if (now - last >= 800) {
-      await applyDelta(site.id, 1000)
-    }
+    await applyTimeUpdate(site.id, TICK_INTERVAL_MS)
   }
 }
 
-// 1. Native runtime messaging (guaranteed to wake service worker)
-browser.runtime.onMessage.addListener((message: any, _sender: any, sendResponse: any) => {
-  if (message?.type === 'session-update') {
-    const { siteId, delta } = message
-    const clampedDelta = Math.min(Math.max(delta || 1000, 0), 5000)
-    applyDelta(siteId, clampedDelta).then(() => {
-      sendResponse({ success: true })
-    })
-    return true
-  }
+// Single alarm-based tick - reliable for service workers
+browser.alarms.create(ALARM_TICK, { periodInMinutes: 1 / 60 })
+
+browser.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name === ALARM_TICK)
+    await tick()
 })
 
-// 2. webext-bridge message listener
-onMessage('session-update', async ({ data }) => {
-  const { siteId, delta } = data
-  const clampedDelta = Math.min(Math.max(delta, 0), 5000)
-  await applyDelta(siteId, clampedDelta)
-})
-
-// 3. Tab event listeners to wake and track immediately
+// Tab events to immediately check when user switches to a blocked site
 browser.tabs.onActivated.addListener(() => {
   tick().catch(() => {})
 })
@@ -151,17 +142,6 @@ browser.tabs.onUpdated.addListener((_tabId, changeInfo) => {
   if (changeInfo.url || changeInfo.status === 'complete') {
     tick().catch(() => {})
   }
-})
-
-// 4. Fallback interval while service worker is awake
-setInterval(tick, 1000)
-
-// 5. Periodic alarm as fallback to wake service worker and reset daily
-browser.alarms.create(ALARM_TICK, { periodInMinutes: 1 / 60 })
-
-browser.alarms.onAlarm.addListener(async (alarm) => {
-  if (alarm.name === ALARM_TICK)
-    await tick()
 })
 
 browser.runtime.onInstalled.addListener(async () => {

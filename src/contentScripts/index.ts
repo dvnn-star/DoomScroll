@@ -1,9 +1,9 @@
-import { onMessage, sendMessage } from 'webext-bridge/content-script'
+import { onMessage } from 'webext-bridge/content-script'
 import { createApp, ref } from 'vue'
 import type { BlockedSite } from '../../shim'
 import App from './views/App.vue'
 import { setupApp } from '~/logic/common-setup'
-import { getStorage, setStorage } from '~/logic/storage'
+import { getStorage } from '~/logic/storage'
 import '../styles'
 
 function getMatchedSite(sites: BlockedSite[]): BlockedSite | null {
@@ -21,8 +21,6 @@ function getMatchedSite(sites: BlockedSite[]): BlockedSite | null {
   const currentSiteId = ref('')
 
   let currentSite: BlockedSite | null = null
-  let heartbeatTimer: ReturnType<typeof setInterval> | null = null
-  let lastHeartbeat = Date.now()
   let isMounted = false
 
   function mountUi() {
@@ -69,92 +67,14 @@ function getMatchedSite(sites: BlockedSite[]): BlockedSite | null {
     app.mount(root)
   }
 
-  async function sendHeartbeat() {
-    if (!currentSite)
-      return
-    if (document.visibilityState !== 'visible') {
-      lastHeartbeat = Date.now()
-      return
-    }
-
-    const siteId = currentSite.id
-    const now = Date.now()
-    const delta = Math.min(Math.max(now - lastHeartbeat, 1000), 3000)
-    lastHeartbeat = now
-
-    let bgHandled = false
-
-    // 1. Native message to wake service worker
-    try {
-      if (typeof browser !== 'undefined' && browser.runtime?.sendMessage) {
-        const res = await browser.runtime.sendMessage({ type: 'session-update', siteId, delta }) as { success?: boolean } | undefined
-        if (res?.success)
-          bgHandled = true
-      }
-    }
-    catch {
-      // background service worker waking or inactive
-    }
-
-    // 2. webext-bridge message
-    sendMessage('session-update', { siteId, delta }, 'background').catch(() => {})
-
-    // 3. Fallback: Directly update local storage if background didn't ack
-    if (!bgHandled) {
-      try {
-        const state = await getStorage()
-        const idx = state.blockedSites.findIndex(s => s.id === siteId)
-        if (idx !== -1) {
-          const site = state.blockedSites[idx]
-          const newSessionTime = site.sessionTime + delta
-          const updated = [...state.blockedSites]
-          updated[idx] = { ...site, sessionTime: newSessionTime }
-          await setStorage({ blockedSites: updated })
-
-          if (newSessionTime >= site.limitMs) {
-            limitReached.value = true
-            showWarning.value = false
-            setTimeout(() => {
-              window.location.replace('about:blank')
-            }, 1200)
-          }
-          else {
-            const remaining = site.limitMs - newSessionTime
-            if (remaining <= 5 * 60 * 1000) {
-              showWarning.value = true
-              warningRemaining.value = remaining
-            }
-          }
-        }
-      }
-      catch {}
-    }
-
-    if (showWarning.value && warningRemaining.value > 0) {
-      warningRemaining.value = Math.max(0, warningRemaining.value - delta)
-    }
-  }
-
   function startTracking(site: BlockedSite) {
     currentSite = site
     currentSiteId.value = site.id
     mountUi()
-
-    if (heartbeatTimer)
-      clearInterval(heartbeatTimer)
-
-    lastHeartbeat = Date.now()
-    heartbeatTimer = setInterval(sendHeartbeat, 1000)
-    // Run immediate heartbeat on start
-    sendHeartbeat().catch(() => {})
   }
 
   function stopTracking() {
     currentSite = null
-    if (heartbeatTimer) {
-      clearInterval(heartbeatTimer)
-      heartbeatTimer = null
-    }
   }
 
   // Initial site detection
@@ -181,14 +101,6 @@ function getMatchedSite(sites: BlockedSite[]): BlockedSite | null {
       }
     })
   }
-
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') {
-      lastHeartbeat = Date.now()
-      if (currentSite)
-        sendHeartbeat().catch(() => {})
-    }
-  })
 
   onMessage('warning-show', ({ data }) => {
     if (currentSite && data.siteId !== currentSite.id)
